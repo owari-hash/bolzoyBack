@@ -2,6 +2,7 @@ const mongoose = require("mongoose");
 
 const datePlanSchema = new mongoose.Schema(
   {
+    tenantSlug: { type: String, required: true, index: true },
     name: { type: String, default: "" },
     date: { type: String, default: null },
     time: { type: String, default: null },
