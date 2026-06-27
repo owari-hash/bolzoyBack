@@ -5,9 +5,9 @@ const datePlanSchema = new mongoose.Schema(
     name: { type: String, default: "" },
     date: { type: String, default: null },
     time: { type: String, default: null },
+    foodVenue: { type: String, enum: ["outdoor", "home"], default: null },
     foods: { type: [String], default: [] },
-    music: { type: String, default: null },
-    watchMovie: { type: Boolean, default: false },
+    movieVenue: { type: String, enum: ["outdoor", "home"], default: null },
   },
   { timestamps: true }
 );
