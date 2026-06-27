@@ -91,6 +91,7 @@ app.get("/admin", async (req, res) => {
         return `
         <tr class="row" data-id="${p._id}">
           <td class="num">${i + 1}</td>
+          <td><strong>${p.name || "—"}</strong></td>
           <td>${p.date || "—"}</td>
           <td>${time}</td>
           <td>${foods}</td>
@@ -255,6 +256,7 @@ app.get("/admin", async (req, res) => {
       <thead>
         <tr>
           <th>#</th>
+          <th>🌸 Нэр</th>
           <th>📅 Огноо</th>
           <th>⏰ Цаг</th>
           <th>🍜 Хоол</th>
@@ -265,7 +267,7 @@ app.get("/admin", async (req, res) => {
         </tr>
       </thead>
       <tbody id="tbody">
-        ${rows || '<tr><td colspan="8" class="empty">Одоогоор хүсэлт ирээгүй байна 💤</td></tr>'}
+        ${rows || '<tr><td colspan="9" class="empty">Одоогоор хүсэлт ирээгүй байна 💤</td></tr>'}
       </tbody>
     </table>
   </div>
