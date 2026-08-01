@@ -47,20 +47,26 @@ let qpayTokenCache = { token: null, refreshToken: null, expiresAt: 0 };
 const pendingRegistrations = new Map(); // invoice_id -> user reg data
 
 async function getQPayConfigData() {
-  let config = await SystemConfig.findOne({ key: "default" });
-  if (!config) {
-    config = await SystemConfig.create({ key: "default" });
+  let config = null;
+  try {
+    config = await SystemConfig.findOne({ key: "default" });
+    if (!config) {
+      config = await SystemConfig.create({ key: "default" });
+    }
+  } catch (err) {
+    console.warn("⚠️ SystemConfig DB lookup warning:", err.message);
   }
+
   return {
-    terminalId: process.env.QPAY_TERMINAL_ID || config.terminalId || "95000059",
-    merchantId: process.env.QPAY_MERCHANT_ID || config.merchantId || "465d3e33-4f95-461a-ac1b-c24ab095af0a",
-    bankCode: config.bankCode || "050000",
-    accountNumber: config.accountNumber || "5039842709",
-    accountName: config.accountName || "Отгонбилэг",
-    planAmount: config.planAmount || 100,
-    mccCode: config.mccCode || "5812",
-    qpayUsername: process.env.QPAY_USERNAME || config.qpayUsername || "",
-    qpayPassword: process.env.QPAY_PASSWORD || config.qpayPassword || "",
+    terminalId: process.env.QPAY_TERMINAL_ID || config?.terminalId || "95000059",
+    merchantId: process.env.QPAY_MERCHANT_ID || config?.merchantId || "05646a89-8641-4853-812e-7d36676b18e9",
+    bankCode: config?.bankCode || "050000",
+    accountNumber: config?.accountNumber || "5039842709",
+    accountName: config?.accountName || "Отгонбилэг",
+    planAmount: config?.planAmount || 100,
+    mccCode: config?.mccCode || "5812",
+    qpayUsername: process.env.QPAY_USERNAME || config?.qpayUsername || "",
+    qpayPassword: process.env.QPAY_PASSWORD || config?.qpayPassword || "",
   };
 }
 
