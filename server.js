@@ -375,11 +375,9 @@ app.post("/api/qpay/check-payment", async (req, res) => {
       });
     }
 
-    let targetSlug = "tenant";
     const pending = pendingRegistrations.get(invoiceId);
 
     if (pending) {
-      targetSlug = pending.slug;
       const existing = await User.findOne({ $or: [{ username: pending.username }, { slug: pending.slug }] });
       let user = existing;
 
@@ -398,7 +396,7 @@ app.post("/api/qpay/check-payment", async (req, res) => {
 
       pendingRegistrations.delete(invoiceId);
 
-      // Trigger Automatic Vercel Build & Deployment for this tenant
+      // Trigger Automatic Vercel Build & Deployment ONCE for this tenant
       triggerVercelDeployment(user.slug).catch((err) => {
         console.error("⚠️ Auto Vercel Deployment Trigger Error:", err.message);
       });
@@ -413,12 +411,6 @@ app.post("/api/qpay/check-payment", async (req, res) => {
         user: { id: user._id, username: user.username, slug: user.slug, role: user.role, displayName: user.displayName },
       });
     }
-
-    // Fallback: If pending was already cleared or user re-checked payment
-    console.log(`✅ [QPay Payment Verified] Triggering Vercel deployment for invoice "${invoiceId}"...`);
-    triggerVercelDeployment(targetSlug).catch((err) => {
-      console.error("⚠️ Auto Vercel Deployment Trigger Error:", err.message);
-    });
 
     return res.json({
       success: true,
