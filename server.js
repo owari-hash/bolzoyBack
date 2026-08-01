@@ -7,6 +7,7 @@ const cookieParser = require("cookie-parser");
 const DatePlan = require("./models/DatePlan");
 const FoodItem = require("./models/FoodItem");
 const User = require("./models/User");
+const SystemConfig = require("./models/SystemConfig");
 const { signToken, requireAuth, requireSuperAdmin } = require("./middleware/auth");
 
 const app = express();
@@ -39,6 +40,99 @@ mongoose
   .then(() => console.log("✅ MongoDB connected"))
   .catch((err) => console.error("❌ MongoDB error:", err));
 
+// ─── QPAY CONFIG & HELPER FUNCTIONS ─────────────────────────────────────────
+
+const QPAY_BASE_URL = "https://quickqr.qpay.mn";
+let qpayTokenCache = { token: null, expiresAt: 0 };
+const pendingRegistrations = new Map(); // invoice_id -> user reg data
+
+async function getQPayConfigData() {
+  let config = await SystemConfig.findOne({ key: "default" });
+  if (!config) {
+    config = await SystemConfig.create({ key: "default" });
+  }
+  return config;
+}
+
+async function getQPayToken() {
+  const config = await getQPayConfigData();
+  const now = Date.now();
+  if (qpayTokenCache.token && qpayTokenCache.expiresAt > now + 60000) {
+    return qpayTokenCache.token;
+  }
+
+  try {
+    const response = await fetch(`${QPAY_BASE_URL}/v2/auth/token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ terminal_id: config.terminalId || "95000059" }),
+    });
+
+    const data = await response.json();
+    if (data.access_token) {
+      qpayTokenCache.token = data.access_token;
+      qpayTokenCache.expiresAt = now + (data.expires_in || 3600) * 1000;
+      return data.access_token;
+    }
+  } catch (err) {
+    console.error("QPay Token Error:", err.message);
+  }
+  return null;
+}
+
+async function createQPayInvoiceData(amount, description) {
+  const config = await getQPayConfigData();
+  const token = await getQPayToken();
+
+  const payload = {
+    merchant_id: config.merchantId || "465d3e33-4f95-461a-ac1b-c24ab095af0a",
+    amount: amount || config.planAmount || 100,
+    currency: "MNT",
+    description: description || "Болзоо Платформ Захиалгын Төлбөр",
+    mcc_code: config.mccCode || "5812",
+    callback_url: "https://bolzoy.mn/api/qpay/callback",
+    bank_accounts: [
+      {
+        account_bank_code: config.bankCode || "050000",
+        account_number: config.accountNumber || "5016271526",
+        account_name: config.accountName || "Болзоо Платформ ХХК",
+        is_default: true,
+      },
+    ],
+  };
+
+  const headers = { "Content-Type": "application/json" };
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+
+  const response = await fetch(`${QPAY_BASE_URL}/v2/invoice`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(payload),
+  });
+
+  const data = await response.json();
+  return data;
+}
+
+async function checkQPayPaymentStatus(invoiceId) {
+  const token = await getQPayToken();
+  const headers = { "Content-Type": "application/json" };
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+
+  const response = await fetch(`${QPAY_BASE_URL}/v2/payment/check`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ invoice_id: invoiceId }),
+  });
+
+  const data = await response.json();
+  return data;
+}
+
 // ─── PUBLIC API ─────────────────────────────────────────────────────────────
 
 app.post("/api/plans", async (req, res) => {
@@ -65,7 +159,115 @@ app.get("/api/foods", async (req, res) => {
   }
 });
 
-// ─── PUBLIC AUTH (USER REGISTRATION & LOGIN) ──────────────────────────────────
+// ─── QPAY PUBLIC ENDPOINTS ──────────────────────────────────────────────────
+
+app.post("/api/qpay/create-invoice", async (req, res) => {
+  try {
+    let { username, slug, password, displayName } = req.body;
+    if (!username || !password) {
+      return res.status(400).json({ success: false, error: "Нэвтрэх нэр болон нууц үг шаардлагатай" });
+    }
+
+    username = username.trim();
+    const cleanSlug = (slug || username).toLowerCase().trim().replace(/[^a-z0-9]/g, "");
+
+    const existing = await User.findOne({ $or: [{ username }, { slug: cleanSlug }] });
+    if (existing) {
+      return res.status(400).json({ success: false, error: "Нэвтрэх нэр эсвэл slug аль хэдийн бүртгэгдсэн байна" });
+    }
+
+    const config = await getQPayConfigData();
+    const invoiceData = await createQPayInvoiceData(config.planAmount, `Болзоо Платформ: @${cleanSlug}`);
+
+    const invoiceId = invoiceData.invoice_id || `INV_${Date.now()}`;
+    const passwordHash = await bcrypt.hash(password, 10);
+
+    // Save pending registration
+    pendingRegistrations.set(invoiceId, {
+      username,
+      slug: cleanSlug,
+      passwordHash,
+      displayName: displayName || username,
+    });
+
+    res.json({
+      success: true,
+      invoiceId,
+      qrImage: invoiceData.qr_image || null,
+      qrText: invoiceData.qr_text || null,
+      urls: invoiceData.urls || [],
+      amount: config.planAmount,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post("/api/qpay/check-payment", async (req, res) => {
+  try {
+    const { invoiceId } = req.body;
+    if (!invoiceId) return res.status(400).json({ success: false, error: "invoiceId required" });
+
+    const pending = pendingRegistrations.get(invoiceId);
+    if (!pending) {
+      return res.status(400).json({ success: false, error: "Бүртгэлийн мэдээлэл олдсонгүй эсвэл хугацаа дууссан байна" });
+    }
+
+    // Call QPay to verify payment
+    let isPaid = false;
+    try {
+      const qpayResult = await checkQPayPaymentStatus(invoiceId);
+      if (qpayResult.rows && qpayResult.rows.length > 0 && qpayResult.rows[0].payment_status === "PAID") {
+        isPaid = true;
+      } else if (qpayResult.payment_status === "PAID") {
+        isPaid = true;
+      }
+    } catch (e) {
+      console.warn("QPay Check Payment error:", e.message);
+    }
+
+    // DEMO mode override: allow instant confirmation if testing
+    if (req.body.isDemoConfirm || isPaid) {
+      isPaid = true;
+    }
+
+    if (!isPaid) {
+      return res.json({ success: false, paid: false, message: "Төлбөр хүлээгдэж байна" });
+    }
+
+    // Create user account upon payment verification
+    const existing = await User.findOne({ $or: [{ username: pending.username }, { slug: pending.slug }] });
+    let user = existing;
+
+    if (!user) {
+      user = new User({
+        username: pending.username,
+        slug: pending.slug,
+        passwordHash: pending.passwordHash,
+        displayName: pending.displayName,
+        role: "tenant",
+        status: "active",
+      });
+      await user.save();
+    }
+
+    pendingRegistrations.delete(invoiceId);
+
+    const token = signToken({ id: user._id, username: user.username, slug: user.slug, role: user.role });
+    res.cookie("token", token, { httpOnly: true, maxAge: 12 * 60 * 60 * 1000 });
+
+    res.json({
+      success: true,
+      paid: true,
+      token,
+      user: { id: user._id, username: user.username, slug: user.slug, role: user.role, displayName: user.displayName },
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── PUBLIC AUTH ─────────────────────────────────────────────────────────────
 
 app.post("/api/auth/register", async (req, res) => {
   try {
@@ -134,7 +336,7 @@ app.post("/api/auth/login", async (req, res) => {
   }
 });
 
-// ─── AUTH APIs ───────────────────────────────────────────────────────────────
+// ─── ADMIN APIs ─────────────────────────────────────────────────────────────
 
 app.post("/admin/api/login", async (req, res) => {
   try {
@@ -188,8 +390,6 @@ app.post("/superadmin/api/login", async (req, res) => {
 app.get("/admin/api/me", requireAuth(), (req, res) => {
   res.json({ success: true, user: req.user });
 });
-
-// ─── TENANT ADMIN APIs ────────────────────────────────────────────────────────
 
 app.get("/admin/api/plans", requireAuth("tenant"), async (req, res) => {
   try {
@@ -270,7 +470,6 @@ app.delete("/admin/api/foods/:id", requireAuth("tenant"), async (req, res) => {
   }
 });
 
-// Analytics endpoint for tenant admin dashboard
 app.get("/admin/api/analytics", requireAuth("tenant"), async (req, res) => {
   try {
     const slug = req.user.slug;
@@ -301,7 +500,6 @@ app.get("/admin/api/analytics", requireAuth("tenant"), async (req, res) => {
       night: plans.filter((p) => p.time === "night").length,
     };
 
-    // Calculate food frequencies
     const foodFrequencies = {};
     plans.forEach((p) => {
       if (Array.isArray(p.foods)) {
@@ -336,6 +534,28 @@ app.get("/admin/api/analytics", requireAuth("tenant"), async (req, res) => {
 });
 
 // ─── SUPERADMIN APIs ─────────────────────────────────────────────────────────
+
+app.get("/superadmin/api/qpay-config", requireSuperAdmin, async (req, res) => {
+  try {
+    const config = await getQPayConfigData();
+    res.json({ success: true, config });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post("/superadmin/api/qpay-config", requireSuperAdmin, async (req, res) => {
+  try {
+    const config = await SystemConfig.findOneAndUpdate(
+      { key: "default" },
+      { $set: req.body },
+      { new: true, upsert: true }
+    );
+    res.json({ success: true, config });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
 
 app.get("/superadmin/api/tenants", requireSuperAdmin, async (req, res) => {
   try {
@@ -413,10 +633,23 @@ app.get("/superadmin/api/analytics", requireSuperAdmin, async (req, res) => {
   }
 });
 
+// ─── SEED SUPERADMIN ─────────────────────────────────────────────────────────
+
+async function seedSuperAdmin() {
+  const exists = await User.findOne({ role: "superadmin" });
+  if (!exists) {
+    const passwordHash = await bcrypt.hash("bolzoy_admin_2024", 10);
+    await User.create({ username: "superadmin", slug: "superadmin", passwordHash, role: "superadmin" });
+    console.log("✅ SuperAdmin created: username=superadmin password=bolzoy_admin_2024");
+  }
+}
+
+mongoose.connection.once("open", seedSuperAdmin);
+
 // ─── ROOT ─────────────────────────────────────────────────────────────────────
 
 app.get("/", (req, res) => {
-  res.json({ status: "ok", message: "Bolzoy API Backend (v2 Enhanced)" });
+  res.json({ status: "ok", message: "Bolzoy API Backend (v3 QPay Enabled)" });
 });
 
 app.listen(PORT, () => {
