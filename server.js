@@ -225,25 +225,11 @@ async function triggerVercelDeployment(slug) {
     return;
   }
 
-  // 1. Trigger Deploy Hook Webhook
-  if (vercelDeployHook) {
-    try {
-      console.log(`📡 [VERCEL LOG] Triggering Vercel Deploy Hook: ${vercelDeployHook}`);
-      const hookRes = await fetch(vercelDeployHook, { method: "POST" });
-      const hookData = await hookRes.json();
-      console.log(`✅ [VERCEL LOG] Deploy Hook Status ${hookRes.status}:`, JSON.stringify(hookData, null, 2));
-      console.log(`======================================================\n`);
-      return hookData;
-    } catch (e) {
-      console.error("❌ [VERCEL LOG EXCEPTION - WEBHOOK]:", e.message);
-    }
-  }
-
-  // 2. Trigger Vercel REST API Deployment if Token is set
+  // Use REST API to create a unique project per tenant (NOT the shared deploy hook)
   if (vercelToken) {
     try {
-      console.log(`📡 [VERCEL LOG] Sending Vercel REST API deployment request...`);
-      const apiRes = await fetch("https://api.vercel.com/v6/deployments", {
+      console.log(`📡 [VERCEL LOG] Creating unique Vercel project via REST API: ${projectName}`);
+      const apiRes = await fetch("https://api.vercel.com/v13/deployments?skipAutoDetectionConfirmation=1", {
         method: "POST",
         headers: {
           Authorization: `Bearer ${vercelToken}`,
@@ -251,16 +237,36 @@ async function triggerVercelDeployment(slug) {
         },
         body: JSON.stringify({
           name: projectName,
-          target: "production",
+          projectSettings: { framework: "nextjs" },
+          gitSource: {
+            type: "github",
+            org: "owari-hash",
+            repo: "bolzoyLanding",
+            ref: "main",
+          },
         }),
       });
       const data = await apiRes.json();
-      console.log(`✅ [VERCEL LOG] API Response Status ${apiRes.status}:`, JSON.stringify(data, null, 2));
+      console.log(`✅ [VERCEL LOG] Deployment created for "${projectName}" -> ${data.url || "see Vercel dashboard"}`);
       console.log(`======================================================\n`);
       return data;
     } catch (e) {
       console.error("❌ [VERCEL LOG EXCEPTION - REST API]:", e.message);
       console.log(`======================================================\n`);
+    }
+  }
+
+  // Fallback to deploy hook (triggers same project - not per user)
+  if (vercelDeployHook) {
+    try {
+      console.log(`⚠️ [VERCEL LOG] No TOKEN — falling back to deploy hook (same project, not per user!)`);
+      const hookRes = await fetch(vercelDeployHook, { method: "POST" });
+      const hookData = await hookRes.json();
+      console.log(`✅ [VERCEL LOG] Deploy Hook Status ${hookRes.status}:`, JSON.stringify(hookData, null, 2));
+      console.log(`======================================================\n`);
+      return hookData;
+    } catch (e) {
+      console.error("❌ [VERCEL LOG EXCEPTION - WEBHOOK]:", e.message);
     }
   }
 }
