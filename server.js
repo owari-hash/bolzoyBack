@@ -348,7 +348,6 @@ app.post("/api/qpay/check-payment", async (req, res) => {
 
     try {
       qpayResult = await checkQPayPaymentStatus(invoiceId);
-      console.log(`[QPay Check Payment Output for ${invoiceId}]:`, JSON.stringify(qpayResult, null, 2));
 
       if (qpayResult) {
         if (qpayResult.invoice_status === "PAID" || qpayResult.payment_status === "PAID" || qpayResult.paid === true) {
