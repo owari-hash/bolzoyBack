@@ -225,13 +225,15 @@ async function triggerVercelDeployment(slug) {
     return;
   }
 
-  // 1. Trigger Deploy Hook Webhook if available
+  // 1. Trigger Deploy Hook Webhook
   if (vercelDeployHook) {
     try {
-      console.log(`📡 [VERCEL LOG] Calling Webhook URL: ${vercelDeployHook}`);
+      console.log(`📡 [VERCEL LOG] Triggering Vercel Deploy Hook: ${vercelDeployHook}`);
       const hookRes = await fetch(vercelDeployHook, { method: "POST" });
-      const text = await hookRes.text();
-      console.log(`✅ [VERCEL LOG] Webhook Response Status ${hookRes.status}:`, text);
+      const hookData = await hookRes.json();
+      console.log(`✅ [VERCEL LOG] Deploy Hook Status ${hookRes.status}:`, JSON.stringify(hookData, null, 2));
+      console.log(`======================================================\n`);
+      return hookData;
     } catch (e) {
       console.error("❌ [VERCEL LOG EXCEPTION - WEBHOOK]:", e.message);
     }
@@ -240,8 +242,8 @@ async function triggerVercelDeployment(slug) {
   // 2. Trigger Vercel REST API Deployment if Token is set
   if (vercelToken) {
     try {
-      console.log(`📡 [VERCEL LOG] Sending POST https://api.vercel.com/v13/deployments...`);
-      const apiRes = await fetch("https://api.vercel.com/v13/deployments", {
+      console.log(`📡 [VERCEL LOG] Sending Vercel REST API deployment request...`);
+      const apiRes = await fetch("https://api.vercel.com/v6/deployments", {
         method: "POST",
         headers: {
           Authorization: `Bearer ${vercelToken}`,
@@ -249,16 +251,11 @@ async function triggerVercelDeployment(slug) {
         },
         body: JSON.stringify({
           name: projectName,
-          gitSource: {
-            type: "github",
-            repo: "owari-hash/bolzoyLanding",
-            ref: "main",
-          },
+          target: "production",
         }),
       });
       const data = await apiRes.json();
-      console.log(`✅ [VERCEL LOG] API Response Status ${apiRes.status}:`);
-      console.dir(data, { depth: null });
+      console.log(`✅ [VERCEL LOG] API Response Status ${apiRes.status}:`, JSON.stringify(data, null, 2));
       console.log(`======================================================\n`);
       return data;
     } catch (e) {
