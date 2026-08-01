@@ -65,6 +65,75 @@ app.get("/api/foods", async (req, res) => {
   }
 });
 
+// ─── PUBLIC AUTH (USER REGISTRATION & LOGIN) ──────────────────────────────────
+
+app.post("/api/auth/register", async (req, res) => {
+  try {
+    let { username, slug, password, displayName } = req.body;
+    if (!username || !password) {
+      return res.status(400).json({ success: false, error: "Нэвтрэх нэр болон нууц үг шаардлагатай" });
+    }
+
+    username = username.trim();
+    const cleanSlug = (slug || username).toLowerCase().trim().replace(/[^a-z0-9]/g, "");
+
+    const existing = await User.findOne({ $or: [{ username }, { slug: cleanSlug }] });
+    if (existing) {
+      return res.status(400).json({ success: false, error: "Нэвтрэх нэр эсвэл slug аль хэдийн бүртгэгдсэн байна" });
+    }
+
+    const passwordHash = await bcrypt.hash(password, 10);
+    const user = new User({
+      username,
+      slug: cleanSlug,
+      passwordHash,
+      displayName: displayName || username,
+      role: "tenant",
+      status: "active",
+    });
+    await user.save();
+
+    const token = signToken({ id: user._id, username: user.username, slug: user.slug, role: user.role });
+    res.cookie("token", token, { httpOnly: true, maxAge: 12 * 60 * 60 * 1000 });
+    res.status(201).json({
+      success: true,
+      token,
+      user: { id: user._id, username: user.username, slug: user.slug, role: user.role, displayName: user.displayName },
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post("/api/auth/login", async (req, res) => {
+  try {
+    const { username, password } = req.body;
+    if (!username || !password) {
+      return res.status(400).json({ success: false, error: "Нэвтрэх нэр болон нууц үг оруулна уу" });
+    }
+    const user = await User.findOne({ username });
+    if (!user) {
+      return res.status(400).json({ success: false, error: "Нэвтрэх нэр эсвэл нууц үг буруу байна" });
+    }
+    if (user.status === "suspended") {
+      return res.status(403).json({ success: false, error: "Хэрэглэгчийн эрх хаагдсан байна" });
+    }
+    const ok = await bcrypt.compare(password, user.passwordHash);
+    if (!ok) {
+      return res.status(400).json({ success: false, error: "Нэвтрэх нэр эсвэл нууц үг буруу байна" });
+    }
+    const token = signToken({ id: user._id, username: user.username, slug: user.slug, role: user.role });
+    res.cookie("token", token, { httpOnly: true, maxAge: 12 * 60 * 60 * 1000 });
+    res.json({
+      success: true,
+      token,
+      user: { id: user._id, username: user.username, slug: user.slug, role: user.role, displayName: user.displayName },
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // ─── AUTH APIs ───────────────────────────────────────────────────────────────
 
 app.post("/admin/api/login", async (req, res) => {
