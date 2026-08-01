@@ -91,7 +91,6 @@ async function getQPayToken() {
   // 2. Try refreshing token if refresh_token is available
   if (qpayTokenCache.refreshToken) {
     try {
-      console.log("[QPay] Token expired. Attempting token refresh via /v2/auth/refresh...");
       const refreshResponse = await fetch(`${QPAY_BASE_URL}/v2/auth/refresh`, {
         method: "POST",
         headers: {
@@ -103,7 +102,6 @@ async function getQPayToken() {
 
       const refreshData = await refreshResponse.json();
       if (refreshData.access_token) {
-        console.log("✅ [QPay] Token refreshed successfully!");
         qpayTokenCache.token = refreshData.access_token;
         if (refreshData.refresh_token) {
           qpayTokenCache.refreshToken = refreshData.refresh_token;
@@ -111,9 +109,8 @@ async function getQPayToken() {
         qpayTokenCache.expiresAt = now + (refreshData.expires_in || 3600) * 1000;
         return refreshData.access_token;
       }
-      console.warn("[QPay] Token refresh failed, falling back to full login...", JSON.stringify(refreshData));
-    } catch (refreshErr) {
-      console.error("[QPay Token Refresh Exception]:", refreshErr.message);
+    } catch {
+      // ignore silent refresh errors
     }
   }
 
@@ -125,9 +122,6 @@ async function getQPayToken() {
     if (config.qpayUsername && config.qpayPassword) {
       const authHeader = Buffer.from(`${config.qpayUsername}:${config.qpayPassword}`).toString("base64");
       headers["Authorization"] = `Basic ${authHeader}`;
-      console.log(`[QPay] Auto-logging in with Basic Auth (user: "${config.qpayUsername}")...`);
-    } else {
-      console.log(`[QPay] Auto-logging in with terminal_id: "${config.terminalId || "95000059"}"...`);
     }
 
     const response = await fetch(`${QPAY_BASE_URL}/v2/auth/token`, {
@@ -138,16 +132,13 @@ async function getQPayToken() {
 
     const data = await response.json();
     if (data.access_token) {
-      console.log("✅ [QPay] Token acquired successfully via auto-login!");
       qpayTokenCache.token = data.access_token;
       qpayTokenCache.refreshToken = data.refresh_token || null;
       qpayTokenCache.expiresAt = now + (data.expires_in || 3600) * 1000;
       return data.access_token;
-    } else {
-      console.error("❌ [QPay Token Error] API returned no access_token:", JSON.stringify(data));
     }
-  } catch (err) {
-    console.error("❌ [QPay Token Fetch Exception]:", err.message);
+  } catch {
+    // silent catch
   }
   return null;
 }
@@ -176,12 +167,9 @@ async function createQPayInvoiceData(amount, description) {
   const headers = { "Content-Type": "application/json" };
   if (token) {
     headers["Authorization"] = `Bearer ${token}`;
-  } else {
-    console.warn("[QPay Invoice Warning] Requesting invoice WITHOUT Authorization token because getQPayToken returned null");
   }
 
   try {
-    console.log("[QPay Invoice Payload]:", JSON.stringify(payload, null, 2));
     const response = await fetch(`${QPAY_BASE_URL}/v2/invoice`, {
       method: "POST",
       headers,
@@ -189,10 +177,8 @@ async function createQPayInvoiceData(amount, description) {
     });
 
     const data = await response.json();
-    console.log(`[QPay Invoice API Status ${response.status}]:`, JSON.stringify(data, null, 2));
     return data;
   } catch (err) {
-    console.error("[QPay Invoice Fetch Exception]:", err.message);
     return { error: err.message };
   }
 }
@@ -217,10 +203,8 @@ async function checkQPayPaymentStatus(invoiceId) {
     });
 
     const data = await response.json();
-    console.log(`[QPay Check Payment API Status ${response.status} for ${invoiceId}]:`, JSON.stringify(data, null, 2));
     return data;
   } catch (err) {
-    console.error("[QPay Check Payment Exception]:", err.message);
     return { error: err.message };
   }
 }
@@ -230,29 +214,33 @@ async function triggerVercelDeployment(slug) {
   const vercelDeployHook = (process.env.VERCEL_DEPLOY_HOOK_URL || "").trim();
   const projectName = `date-with-${slug}`;
 
-  console.log(`🚀 [Auto Vercel Deploy] Attempting deployment for tenant "@${slug}" (Project: ${projectName})...`);
+  console.log(`\n======================================================`);
+  console.log(`🚀 [VERCEL LOG] STARTING AUTO DEPLOYMENT FOR TENANT: "@${slug}"`);
+  console.log(`🚀 [VERCEL LOG] TARGET PROJECT NAME: ${projectName}`);
+  console.log(`======================================================`);
 
   if (!vercelToken && !vercelDeployHook) {
-    console.warn(`⚠️ [Vercel Warning] Neither VERCEL_TOKEN nor VERCEL_DEPLOY_HOOK_URL is set in .env! Please paste your token/hook into bolzoyBack/.env.`);
+    console.warn(`⚠️ [VERCEL LOG WARNING] Neither VERCEL_TOKEN nor VERCEL_DEPLOY_HOOK_URL is set in bolzoyBack/.env!`);
+    console.log(`======================================================\n`);
     return;
   }
 
   // 1. Trigger Deploy Hook Webhook if available
   if (vercelDeployHook) {
     try {
-      console.log(`[Vercel Deploy Hook] Calling webhook URL: ${vercelDeployHook}`);
+      console.log(`📡 [VERCEL LOG] Calling Webhook URL: ${vercelDeployHook}`);
       const hookRes = await fetch(vercelDeployHook, { method: "POST" });
       const text = await hookRes.text();
-      console.log(`✅ [Vercel Deploy Hook Status ${hookRes.status}]:`, text);
+      console.log(`✅ [VERCEL LOG] Webhook Response Status ${hookRes.status}:`, text);
     } catch (e) {
-      console.error("❌ [Vercel Deploy Hook Exception]:", e.message);
+      console.error("❌ [VERCEL LOG EXCEPTION - WEBHOOK]:", e.message);
     }
   }
 
   // 2. Trigger Vercel REST API Deployment if Token is set
   if (vercelToken) {
     try {
-      console.log(`[Vercel REST API] Creating deployment via https://api.vercel.com/v13/deployments...`);
+      console.log(`📡 [VERCEL LOG] Sending POST https://api.vercel.com/v13/deployments...`);
       const apiRes = await fetch("https://api.vercel.com/v13/deployments", {
         method: "POST",
         headers: {
@@ -269,10 +257,13 @@ async function triggerVercelDeployment(slug) {
         }),
       });
       const data = await apiRes.json();
-      console.log(`✅ [Vercel REST API Status ${apiRes.status}]:`, JSON.stringify(data, null, 2));
+      console.log(`✅ [VERCEL LOG] API Response Status ${apiRes.status}:`);
+      console.dir(data, { depth: null });
+      console.log(`======================================================\n`);
       return data;
     } catch (e) {
-      console.error("❌ [Vercel REST API Exception]:", e.message);
+      console.error("❌ [VERCEL LOG EXCEPTION - REST API]:", e.message);
+      console.log(`======================================================\n`);
     }
   }
 }
