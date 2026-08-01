@@ -624,6 +624,101 @@ app.post("/superadmin/api/qpay-config", requireSuperAdmin, async (req, res) => {
   }
 });
 
+app.post("/superadmin/api/register-qpay-merchant", requireSuperAdmin, async (req, res) => {
+  try {
+    const token = await getQPayToken();
+    if (!token) {
+      return res.status(500).json({ success: false, error: "QPay token авч чадсангүй" });
+    }
+
+    const {
+      type = "person",
+      register_number,
+      first_name,
+      last_name,
+      company_name,
+      business_name,
+      mcc_code = "5812",
+      city = "11000",
+      district = "17000",
+      address,
+      phone,
+      email,
+    } = req.body;
+
+    if (!register_number || !business_name || !phone || !email) {
+      return res.status(400).json({ success: false, error: "Регистр, бизнесийн нэр, утас болон и-мэйл заавал шаардлагатай" });
+    }
+
+    const endpoint = type === "company" ? `${QPAY_BASE_URL}/v2/merchant/company` : `${QPAY_BASE_URL}/v2/merchant/person`;
+    const payload = type === "company"
+      ? {
+          register_number,
+          company_name: company_name || business_name,
+          name: business_name,
+          mcc_code,
+          city,
+          district,
+          address: address || "Ulaanbaatar",
+          phone,
+          email,
+        }
+      : {
+          register_number,
+          first_name: first_name || "Merchant",
+          last_name: last_name || "Owner",
+          business_name,
+          mcc_code,
+          city,
+          district,
+          address: address || "Ulaanbaatar",
+          phone,
+          email,
+        };
+
+    console.log(`[QPay Register Merchant] Sending to ${endpoint}:`, payload);
+
+    const qpayRes = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const qpayData = await qpayRes.json();
+    console.log(`[QPay Register Merchant Status ${qpayRes.status}]:`, qpayData);
+
+    if (!qpayRes.ok || qpayData.error) {
+      return res.status(400).json({
+        success: false,
+        error: qpayData.message || qpayData.error || "QPay Мерчант бүртгэхэд алдаа гарлаа",
+        details: qpayData,
+      });
+    }
+
+    const newMerchantId = qpayData.id || qpayData.merchant_id;
+    if (newMerchantId) {
+      await SystemConfig.findOneAndUpdate(
+        { key: "default" },
+        { $set: { merchantId: newMerchantId } },
+        { new: true, upsert: true }
+      );
+      process.env.QPAY_MERCHANT_ID = newMerchantId;
+      console.log(`✅ [QPay] Registered new Merchant! Set merchantId = ${newMerchantId}`);
+    }
+
+    res.json({
+      success: true,
+      merchantId: newMerchantId,
+      merchant: qpayData,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 app.get("/superadmin/api/tenants", requireSuperAdmin, async (req, res) => {
   try {
     const tenants = await User.find({ role: "tenant" }).sort({ createdAt: -1 });
