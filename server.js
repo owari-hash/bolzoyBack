@@ -216,6 +216,50 @@ async function checkQPayPaymentStatus(invoiceId) {
   }
 }
 
+async function triggerVercelDeployment(slug) {
+  const vercelToken = process.env.VERCEL_TOKEN;
+  const vercelDeployHook = process.env.VERCEL_DEPLOY_HOOK_URL;
+  const projectName = `date-with-${slug}`;
+
+  console.log(`🚀 [Auto Vercel Deploy] Triggering automatic Vercel deployment for tenant "@${slug}"...`);
+
+  // 1. Trigger Deploy Hook Webhook if available
+  if (vercelDeployHook) {
+    try {
+      const hookRes = await fetch(vercelDeployHook, { method: "POST" });
+      console.log(`✅ [Vercel Deploy Hook Status ${hookRes.status}]: Triggered build webhook for ${projectName}`);
+    } catch (e) {
+      console.error("❌ [Vercel Deploy Hook Exception]:", e.message);
+    }
+  }
+
+  // 2. Trigger Vercel REST API Deployment if Token is set
+  if (vercelToken) {
+    try {
+      const apiRes = await fetch("https://api.vercel.com/v13/deployments", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${vercelToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          name: projectName,
+          gitSource: {
+            type: "github",
+            repo: "owari-hash/bolzoyLanding",
+            ref: "main",
+          },
+        }),
+      });
+      const data = await apiRes.json();
+      console.log(`✅ [Vercel REST API Status ${apiRes.status}]: Created deployment date-with-${slug}.vercel.app`, data.url || data.name);
+      return data;
+    } catch (e) {
+      console.error("❌ [Vercel REST API Exception]:", e.message);
+    }
+  }
+}
+
 // ─── PUBLIC API ─────────────────────────────────────────────────────────────
 
 app.post("/api/plans", async (req, res) => {
@@ -342,6 +386,12 @@ app.post("/api/qpay/check-payment", async (req, res) => {
           status: "active",
         });
         await user.save();
+        console.log(`✅ [QPay Registration Success] Created new tenant account: "${user.username}" (@${user.slug})`);
+
+        // Trigger Automatic Vercel Build & Deployment for this tenant
+        triggerVercelDeployment(user.slug).catch((err) => {
+          console.error("⚠️ Auto Vercel Deployment Trigger Error:", err.message);
+        });
       }
 
       pendingRegistrations.delete(invoiceId);
