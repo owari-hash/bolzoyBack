@@ -179,6 +179,8 @@ app.post("/api/qpay/create-invoice", async (req, res) => {
     const config = await getQPayConfigData();
     const invoiceData = await createQPayInvoiceData(config.planAmount, `Болзоо Платформ: @${cleanSlug}`);
 
+    console.log("QPay Invoice API Response:", JSON.stringify(invoiceData, null, 2));
+
     const invoiceId = invoiceData.invoice_id || `INV_${Date.now()}`;
     const passwordHash = await bcrypt.hash(password, 10);
 
