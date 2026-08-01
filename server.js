@@ -189,14 +189,25 @@ async function checkQPayPaymentStatus(invoiceId) {
     headers["Authorization"] = `Bearer ${token}`;
   }
 
-  const response = await fetch(`${QPAY_BASE_URL}/v2/payment/check`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({ invoice_id: invoiceId }),
-  });
+  try {
+    const response = await fetch(`${QPAY_BASE_URL}/v2/payment/check`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        object_type: "INVOICE",
+        object_id: invoiceId,
+        invoice_id: invoiceId,
+        offset: { page_number: 1, page_limit: 10 },
+      }),
+    });
 
-  const data = await response.json();
-  return data;
+    const data = await response.json();
+    console.log(`[QPay Check Payment API Status ${response.status} for ${invoiceId}]:`, JSON.stringify(data, null, 2));
+    return data;
+  } catch (err) {
+    console.error("[QPay Check Payment Exception]:", err.message);
+    return { error: err.message };
+  }
 }
 
 // ─── PUBLIC API ─────────────────────────────────────────────────────────────
@@ -241,11 +252,12 @@ app.post("/api/qpay/create-invoice", async (req, res) => {
     const config = await getQPayConfigData();
     const invoiceData = await createQPayInvoiceData(config.planAmount, `Болзоо Платформ: @${cleanSlug}`);
 
-    if (!invoiceData.invoice_id) {
-      console.warn("⚠️ [QPay Warning] QPay did NOT return invoice_id. Reason/Response:", JSON.stringify(invoiceData));
+    const actualInvoiceId = invoiceData.invoice_id || invoiceData.id;
+    if (!actualInvoiceId) {
+      console.warn("⚠️ [QPay Warning] QPay did NOT return invoice_id or id. Reason/Response:", JSON.stringify(invoiceData));
     }
 
-    const invoiceId = invoiceData.invoice_id || `INV_${Date.now()}`;
+    const invoiceId = actualInvoiceId || `INV_${Date.now()}`;
 
     if (!existing && password) {
       const passwordHash = await bcrypt.hash(password, 10);
@@ -272,62 +284,77 @@ app.post("/api/qpay/create-invoice", async (req, res) => {
 
 app.post("/api/qpay/check-payment", async (req, res) => {
   try {
-    const { invoiceId } = req.body;
+    const { invoiceId, isDemoConfirm } = req.body;
     if (!invoiceId) return res.status(400).json({ success: false, error: "invoiceId required" });
-
-    const pending = pendingRegistrations.get(invoiceId);
-    if (!pending) {
-      return res.status(400).json({ success: false, error: "Бүртгэлийн мэдээлэл олдсонгүй эсвэл хугацаа дууссан байна" });
-    }
 
     // Call QPay to verify payment
     let isPaid = false;
+    let qpayResult = null;
+
     try {
-      const qpayResult = await checkQPayPaymentStatus(invoiceId);
-      if (qpayResult.rows && qpayResult.rows.length > 0 && qpayResult.rows[0].payment_status === "PAID") {
-        isPaid = true;
-      } else if (qpayResult.payment_status === "PAID") {
-        isPaid = true;
+      qpayResult = await checkQPayPaymentStatus(invoiceId);
+      console.log(`[QPay Check Payment Output for ${invoiceId}]:`, JSON.stringify(qpayResult, null, 2));
+
+      if (qpayResult) {
+        if (qpayResult.invoice_status === "PAID" || qpayResult.payment_status === "PAID" || qpayResult.paid === true) {
+          isPaid = true;
+        } else if (qpayResult.payments && qpayResult.payments.length > 0 && qpayResult.payments.some((p) => p.payment_status === "SUCCESS" || p.payment_status === "PAID")) {
+          isPaid = true;
+        } else if ((qpayResult.count && qpayResult.count > 0) || (qpayResult.rows && qpayResult.rows.length > 0 && qpayResult.rows[0].payment_status === "PAID")) {
+          isPaid = true;
+        }
       }
     } catch (e) {
       console.warn("QPay Check Payment error:", e.message);
     }
 
-    // DEMO mode override: allow instant confirmation if testing
-    if (req.body.isDemoConfirm || isPaid) {
+    if (isDemoConfirm || isPaid) {
       isPaid = true;
     }
 
     if (!isPaid) {
-      return res.json({ success: false, paid: false, message: "Төлбөр хүлээгдэж байна" });
-    }
-
-    // Create user account upon payment verification
-    const existing = await User.findOne({ $or: [{ username: pending.username }, { slug: pending.slug }] });
-    let user = existing;
-
-    if (!user) {
-      user = new User({
-        username: pending.username,
-        slug: pending.slug,
-        passwordHash: pending.passwordHash,
-        displayName: pending.displayName,
-        role: "tenant",
-        status: "active",
+      return res.json({
+        success: false,
+        paid: false,
+        message: "Төлбөр хүлээгдэж байна",
+        qpayResult,
       });
-      await user.save();
     }
 
-    pendingRegistrations.delete(invoiceId);
+    const pending = pendingRegistrations.get(invoiceId);
+    if (pending) {
+      const existing = await User.findOne({ $or: [{ username: pending.username }, { slug: pending.slug }] });
+      let user = existing;
 
-    const token = signToken({ id: user._id, username: user.username, slug: user.slug, role: user.role });
-    res.cookie("token", token, { httpOnly: true, maxAge: 12 * 60 * 60 * 1000 });
+      if (!user) {
+        user = new User({
+          username: pending.username,
+          slug: pending.slug,
+          passwordHash: pending.passwordHash,
+          displayName: pending.displayName,
+          role: "tenant",
+          status: "active",
+        });
+        await user.save();
+      }
 
-    res.json({
+      pendingRegistrations.delete(invoiceId);
+
+      const token = signToken({ id: user._id, username: user.username, slug: user.slug, role: user.role });
+      res.cookie("token", token, { httpOnly: true, maxAge: 12 * 60 * 60 * 1000 });
+
+      return res.json({
+        success: true,
+        paid: true,
+        token,
+        user: { id: user._id, username: user.username, slug: user.slug, role: user.role, displayName: user.displayName },
+      });
+    }
+
+    return res.json({
       success: true,
       paid: true,
-      token,
-      user: { id: user._id, username: user.username, slug: user.slug, role: user.role, displayName: user.displayName },
+      message: "Төлбөр амжилттай баталгаажлаа",
     });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
