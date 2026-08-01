@@ -6,6 +6,9 @@ const foodItemSchema = new mongoose.Schema(
     name: { type: String, required: true },
     emoji: { type: String, default: "🍽️" },
     type: { type: String, enum: ["outdoor", "home"], required: true },
+    price: { type: Number, default: 0 },
+    category: { type: String, default: "General" },
+    isActive: { type: Boolean, default: true, index: true },
   },
   { timestamps: true }
 );

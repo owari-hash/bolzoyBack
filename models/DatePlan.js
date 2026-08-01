@@ -9,6 +9,13 @@ const datePlanSchema = new mongoose.Schema(
     foodVenue: { type: String, enum: ["outdoor", "home"], default: null },
     foods: { type: [String], default: [] },
     movieVenue: { type: String, enum: ["outdoor", "home"], default: null },
+    status: {
+      type: String,
+      enum: ["new", "confirmed", "completed", "cancelled"],
+      default: "new",
+      index: true,
+    },
+    notes: { type: String, default: "" },
   },
   { timestamps: true }
 );

@@ -20,7 +20,7 @@ app.use((req, res, next) => {
     res.setHeader("Access-Control-Allow-Origin", "*");
   }
   res.setHeader("Access-Control-Allow-Credentials", "true");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept");
 
   if (req.method === "OPTIONS") {
@@ -39,13 +39,13 @@ mongoose
   .then(() => console.log("✅ MongoDB connected"))
   .catch((err) => console.error("❌ MongoDB error:", err));
 
-// ─── PUBLIC API (tenant-scoped by tenantSlug in body/query) ──────────────────
+// ─── PUBLIC API ─────────────────────────────────────────────────────────────
 
 app.post("/api/plans", async (req, res) => {
   try {
     const { tenantSlug, ...rest } = req.body;
     if (!tenantSlug) return res.status(400).json({ success: false, error: "tenantSlug required" });
-    const plan = new DatePlan({ tenantSlug, ...rest });
+    const plan = new DatePlan({ tenantSlug, ...rest, status: "new" });
     await plan.save();
     res.status(201).json({ success: true, id: plan._id });
   } catch (err) {
@@ -57,7 +57,7 @@ app.get("/api/foods", async (req, res) => {
   try {
     const { type, tenantSlug } = req.query;
     if (!tenantSlug) return res.status(400).json({ error: "tenantSlug required" });
-    const filter = { tenantSlug, ...(type ? { type } : {}) };
+    const filter = { tenantSlug, isActive: true, ...(type ? { type } : {}) };
     const foods = await FoodItem.find(filter).sort({ createdAt: -1 });
     res.json(foods);
   } catch (err) {
@@ -65,7 +65,7 @@ app.get("/api/foods", async (req, res) => {
   }
 });
 
-// ─── JSON API FOR FRONTEND (bolzoyAdmin) ───────────────────────────────────────
+// ─── AUTH APIs ───────────────────────────────────────────────────────────────
 
 app.post("/admin/api/login", async (req, res) => {
   try {
@@ -73,6 +73,9 @@ app.post("/admin/api/login", async (req, res) => {
     const user = await User.findOne({ username });
     if (!user || user.role === "superadmin") {
       return res.status(400).json({ success: false, error: "Нэвтрэх нэр эсвэл нууц үг буруу байна" });
+    }
+    if (user.status === "suspended") {
+      return res.status(403).json({ success: false, error: "Энэ хэрэглэгчийн эрх хаагдсан байна" });
     }
     const ok = await bcrypt.compare(password, user.passwordHash);
     if (!ok) {
@@ -83,7 +86,7 @@ app.post("/admin/api/login", async (req, res) => {
     res.json({
       success: true,
       token,
-      user: { id: user._id, username: user.username, slug: user.slug, role: user.role },
+      user: { id: user._id, username: user.username, slug: user.slug, role: user.role, displayName: user.displayName },
     });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -117,6 +120,8 @@ app.get("/admin/api/me", requireAuth(), (req, res) => {
   res.json({ success: true, user: req.user });
 });
 
+// ─── TENANT ADMIN APIs ────────────────────────────────────────────────────────
+
 app.get("/admin/api/plans", requireAuth("tenant"), async (req, res) => {
   try {
     const plans = await DatePlan.find({ tenantSlug: req.user.slug }).sort({ createdAt: -1 });
@@ -126,10 +131,20 @@ app.get("/admin/api/plans", requireAuth("tenant"), async (req, res) => {
   }
 });
 
-app.get("/admin/api/foods", requireAuth("tenant"), async (req, res) => {
+app.patch("/admin/api/plans/:id", requireAuth("tenant"), async (req, res) => {
   try {
-    const foods = await FoodItem.find({ tenantSlug: req.user.slug }).sort({ type: 1, createdAt: -1 });
-    res.json({ success: true, foods });
+    const { status, notes } = req.body;
+    const update = {};
+    if (status) update.status = status;
+    if (notes !== undefined) update.notes = notes;
+
+    const plan = await DatePlan.findOneAndUpdate(
+      { _id: req.params.id, tenantSlug: req.user.slug },
+      { $set: update },
+      { new: true }
+    );
+    if (!plan) return res.status(404).json({ success: false, error: "Plan not found" });
+    res.json({ success: true, plan });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
@@ -144,11 +159,34 @@ app.delete("/admin/api/plans/:id", requireAuth("tenant"), async (req, res) => {
   }
 });
 
+app.get("/admin/api/foods", requireAuth("tenant"), async (req, res) => {
+  try {
+    const foods = await FoodItem.find({ tenantSlug: req.user.slug }).sort({ createdAt: -1 });
+    res.json({ success: true, foods });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 app.post("/admin/api/foods", requireAuth("tenant"), async (req, res) => {
   try {
     const item = new FoodItem({ ...req.body, tenantSlug: req.user.slug });
     await item.save();
     res.status(201).json({ success: true, item });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put("/admin/api/foods/:id", requireAuth("tenant"), async (req, res) => {
+  try {
+    const item = await FoodItem.findOneAndUpdate(
+      { _id: req.params.id, tenantSlug: req.user.slug },
+      { $set: req.body },
+      { new: true }
+    );
+    if (!item) return res.status(404).json({ success: false, error: "Item not found" });
+    res.json({ success: true, item });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -163,7 +201,72 @@ app.delete("/admin/api/foods/:id", requireAuth("tenant"), async (req, res) => {
   }
 });
 
-// ─── SUPERADMIN JSON API ──────────────────────────────────────────────────────
+// Analytics endpoint for tenant admin dashboard
+app.get("/admin/api/analytics", requireAuth("tenant"), async (req, res) => {
+  try {
+    const slug = req.user.slug;
+    const [plans, foods] = await Promise.all([
+      DatePlan.find({ tenantSlug: slug }),
+      FoodItem.find({ tenantSlug: slug }),
+    ]);
+
+    const totalPlans = plans.length;
+    const statusCounts = {
+      new: plans.filter((p) => (p.status || "new") === "new").length,
+      confirmed: plans.filter((p) => p.status === "confirmed").length,
+      completed: plans.filter((p) => p.status === "completed").length,
+      cancelled: plans.filter((p) => p.status === "cancelled").length,
+    };
+
+    const venueRatio = {
+      outdoorFood: plans.filter((p) => p.foodVenue === "outdoor").length,
+      homeFood: plans.filter((p) => p.foodVenue === "home").length,
+      outdoorMovie: plans.filter((p) => p.movieVenue === "outdoor").length,
+      homeMovie: plans.filter((p) => p.movieVenue === "home").length,
+    };
+
+    const timeDistribution = {
+      morning: plans.filter((p) => p.time === "morning").length,
+      afternoon: plans.filter((p) => p.time === "afternoon").length,
+      evening: plans.filter((p) => p.time === "evening").length,
+      night: plans.filter((p) => p.time === "night").length,
+    };
+
+    // Calculate food frequencies
+    const foodFrequencies = {};
+    plans.forEach((p) => {
+      if (Array.isArray(p.foods)) {
+        p.foods.forEach((fid) => {
+          foodFrequencies[fid] = (foodFrequencies[fid] || 0) + 1;
+        });
+      }
+    });
+
+    const topFoods = foods
+      .map((f) => ({
+        id: f._id,
+        emoji: f.emoji,
+        name: f.name,
+        count: foodFrequencies[f._id.toString()] || 0,
+      }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 5);
+
+    res.json({
+      success: true,
+      totalPlans,
+      totalFoods: foods.length,
+      statusCounts,
+      venueRatio,
+      timeDistribution,
+      topFoods,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── SUPERADMIN APIs ─────────────────────────────────────────────────────────
 
 app.get("/superadmin/api/tenants", requireSuperAdmin, async (req, res) => {
   try {
@@ -176,16 +279,32 @@ app.get("/superadmin/api/tenants", requireSuperAdmin, async (req, res) => {
 
 app.post("/superadmin/api/tenants", requireSuperAdmin, async (req, res) => {
   try {
-    const { username, slug, password } = req.body;
+    const { username, slug, password, displayName } = req.body;
     if (!username || !slug || !password) return res.status(400).json({ error: "Бүх талбарыг бөглөнө үү" });
     const existing = await User.findOne({ $or: [{ username }, { slug }] });
     if (existing) return res.status(400).json({ error: "Username эсвэл slug аль хэдийн байна" });
     const passwordHash = await bcrypt.hash(password, 10);
-    const user = new User({ username, slug, passwordHash, role: "tenant" });
+    const user = new User({ username, slug, passwordHash, displayName: displayName || "", role: "tenant" });
     await user.save();
     res.status(201).json({ success: true, slug: user.slug, user });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+app.patch("/superadmin/api/tenants/:id", requireSuperAdmin, async (req, res) => {
+  try {
+    const { status, password } = req.body;
+    const update = {};
+    if (status) update.status = status;
+    if (password) {
+      update.passwordHash = await bcrypt.hash(password, 10);
+    }
+    const user = await User.findByIdAndUpdate(req.params.id, { $set: update }, { new: true });
+    if (!user) return res.status(404).json({ success: false, error: "Tenant not found" });
+    res.json({ success: true, user });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
@@ -204,23 +323,31 @@ app.delete("/superadmin/api/tenants/:id", requireSuperAdmin, async (req, res) =>
   }
 });
 
-// ─── SEED SUPERADMIN (run once) ───────────────────────────────────────────────
+app.get("/superadmin/api/analytics", requireSuperAdmin, async (req, res) => {
+  try {
+    const [tenantsCount, activeTenantsCount, plansCount, foodsCount] = await Promise.all([
+      User.countDocuments({ role: "tenant" }),
+      User.countDocuments({ role: "tenant", status: "active" }),
+      DatePlan.countDocuments(),
+      FoodItem.countDocuments(),
+    ]);
 
-async function seedSuperAdmin() {
-  const exists = await User.findOne({ role: "superadmin" });
-  if (!exists) {
-    const passwordHash = await bcrypt.hash("bolzoy_admin_2024", 10);
-    await User.create({ username: "superadmin", slug: "superadmin", passwordHash, role: "superadmin" });
-    console.log("✅ SuperAdmin created: username=superadmin password=bolzoy_admin_2024");
+    res.json({
+      success: true,
+      totalTenants: tenantsCount,
+      activeTenants: activeTenantsCount,
+      totalPlans: plansCount,
+      totalFoods: foodsCount,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
   }
-}
-
-mongoose.connection.once("open", seedSuperAdmin);
+});
 
 // ─── ROOT ─────────────────────────────────────────────────────────────────────
 
 app.get("/", (req, res) => {
-  res.json({ status: "ok", message: "Bolzoy API Backend" });
+  res.json({ status: "ok", message: "Bolzoy API Backend (v2 Enhanced)" });
 });
 
 app.listen(PORT, () => {
