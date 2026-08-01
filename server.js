@@ -53,20 +53,29 @@ async function getQPayConfigData() {
     if (!config) {
       config = await SystemConfig.create({ key: "default" });
     }
+    // Clean up legacy document default if present
+    if (config.merchantId === "465d3e33-4f95-461a-ac1b-c24ab095af0a") {
+      config.merchantId = "05646a89-8641-4853-812e-7d36676b18e9";
+      await config.save().catch(() => {});
+    }
   } catch (err) {
     console.warn("⚠️ SystemConfig DB lookup warning:", err.message);
   }
 
+  const activeMerchantId = (config?.merchantId && config.merchantId !== "465d3e33-4f95-461a-ac1b-c24ab095af0a")
+    ? config.merchantId
+    : (process.env.QPAY_MERCHANT_ID || "05646a89-8641-4853-812e-7d36676b18e9");
+
   return {
-    terminalId: process.env.QPAY_TERMINAL_ID || config?.terminalId || "95000059",
-    merchantId: process.env.QPAY_MERCHANT_ID || config?.merchantId || "05646a89-8641-4853-812e-7d36676b18e9",
+    terminalId: config?.terminalId || process.env.QPAY_TERMINAL_ID || "95000059",
+    merchantId: activeMerchantId,
     bankCode: config?.bankCode || "050000",
     accountNumber: config?.accountNumber || "5039842709",
     accountName: config?.accountName || "Отгонбилэг",
     planAmount: config?.planAmount || 100,
     mccCode: config?.mccCode || "5812",
-    qpayUsername: process.env.QPAY_USERNAME || config?.qpayUsername || "",
-    qpayPassword: process.env.QPAY_PASSWORD || config?.qpayPassword || "",
+    qpayUsername: config?.qpayUsername || process.env.QPAY_USERNAME || "",
+    qpayPassword: config?.qpayPassword || process.env.QPAY_PASSWORD || "",
   };
 }
 
@@ -148,7 +157,7 @@ async function createQPayInvoiceData(amount, description) {
   const token = await getQPayToken();
 
   const payload = {
-    merchant_id: config.merchantId || "465d3e33-4f95-461a-ac1b-c24ab095af0a",
+    merchant_id: config.merchantId || "05646a89-8641-4853-812e-7d36676b18e9",
     amount: amount || config.planAmount || 100,
     currency: "MNT",
     description: description || "Болзоо Платформ Захиалгын Төлбөр",
