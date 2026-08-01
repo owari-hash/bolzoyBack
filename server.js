@@ -90,12 +90,12 @@ async function createQPayInvoiceData(amount, description) {
     currency: "MNT",
     description: description || "Болзоо Платформ Захиалгын Төлбөр",
     mcc_code: config.mccCode || "5812",
-    callback_url: "https://bolzoy.mn/api/qpay/callback",
+    callback_url: "http://103.236.194.106:9000/api/qpay/callback",
     bank_accounts: [
       {
         account_bank_code: config.bankCode || "050000",
-        account_number: config.accountNumber || "5016271526",
-        account_name: config.accountName || "Болзоо Платформ ХХК",
+        account_number: config.accountNumber || "5039842709",
+        account_name: config.accountName || "Отгонбилэг",
         is_default: true,
       },
     ],
