@@ -226,17 +226,24 @@ async function checkQPayPaymentStatus(invoiceId) {
 }
 
 async function triggerVercelDeployment(slug) {
-  const vercelToken = process.env.VERCEL_TOKEN;
-  const vercelDeployHook = process.env.VERCEL_DEPLOY_HOOK_URL;
+  const vercelToken = (process.env.VERCEL_TOKEN || "").trim();
+  const vercelDeployHook = (process.env.VERCEL_DEPLOY_HOOK_URL || "").trim();
   const projectName = `date-with-${slug}`;
 
-  console.log(`🚀 [Auto Vercel Deploy] Triggering automatic Vercel deployment for tenant "@${slug}"...`);
+  console.log(`🚀 [Auto Vercel Deploy] Attempting deployment for tenant "@${slug}" (Project: ${projectName})...`);
+
+  if (!vercelToken && !vercelDeployHook) {
+    console.warn(`⚠️ [Vercel Warning] Neither VERCEL_TOKEN nor VERCEL_DEPLOY_HOOK_URL is set in .env! Please paste your token/hook into bolzoyBack/.env.`);
+    return;
+  }
 
   // 1. Trigger Deploy Hook Webhook if available
   if (vercelDeployHook) {
     try {
+      console.log(`[Vercel Deploy Hook] Calling webhook URL: ${vercelDeployHook}`);
       const hookRes = await fetch(vercelDeployHook, { method: "POST" });
-      console.log(`✅ [Vercel Deploy Hook Status ${hookRes.status}]: Triggered build webhook for ${projectName}`);
+      const text = await hookRes.text();
+      console.log(`✅ [Vercel Deploy Hook Status ${hookRes.status}]:`, text);
     } catch (e) {
       console.error("❌ [Vercel Deploy Hook Exception]:", e.message);
     }
@@ -245,6 +252,7 @@ async function triggerVercelDeployment(slug) {
   // 2. Trigger Vercel REST API Deployment if Token is set
   if (vercelToken) {
     try {
+      console.log(`[Vercel REST API] Creating deployment via https://api.vercel.com/v13/deployments...`);
       const apiRes = await fetch("https://api.vercel.com/v13/deployments", {
         method: "POST",
         headers: {
@@ -261,7 +269,7 @@ async function triggerVercelDeployment(slug) {
         }),
       });
       const data = await apiRes.json();
-      console.log(`✅ [Vercel REST API Status ${apiRes.status}]: Created deployment date-with-${slug}.vercel.app`, data.url || data.name);
+      console.log(`✅ [Vercel REST API Status ${apiRes.status}]:`, JSON.stringify(data, null, 2));
       return data;
     } catch (e) {
       console.error("❌ [Vercel REST API Exception]:", e.message);
