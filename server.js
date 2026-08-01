@@ -62,6 +62,7 @@ async function getQPayToken() {
   }
 
   try {
+    console.log(`[QPay] Requesting token with terminal_id: "${config.terminalId || "95000059"}"...`);
     const response = await fetch(`${QPAY_BASE_URL}/v2/auth/token`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -70,12 +71,15 @@ async function getQPayToken() {
 
     const data = await response.json();
     if (data.access_token) {
+      console.log("[QPay] Token acquired successfully!");
       qpayTokenCache.token = data.access_token;
       qpayTokenCache.expiresAt = now + (data.expires_in || 3600) * 1000;
       return data.access_token;
+    } else {
+      console.error("[QPay Token Error] API returned no access_token:", JSON.stringify(data));
     }
   } catch (err) {
-    console.error("QPay Token Error:", err.message);
+    console.error("[QPay Token Fetch Exception]:", err.message);
   }
   return null;
 }
@@ -104,16 +108,25 @@ async function createQPayInvoiceData(amount, description) {
   const headers = { "Content-Type": "application/json" };
   if (token) {
     headers["Authorization"] = `Bearer ${token}`;
+  } else {
+    console.warn("[QPay Invoice Warning] Requesting invoice WITHOUT Authorization token because getQPayToken returned null");
   }
 
-  const response = await fetch(`${QPAY_BASE_URL}/v2/invoice`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(payload),
-  });
+  try {
+    console.log("[QPay Invoice Payload]:", JSON.stringify(payload, null, 2));
+    const response = await fetch(`${QPAY_BASE_URL}/v2/invoice`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(payload),
+    });
 
-  const data = await response.json();
-  return data;
+    const data = await response.json();
+    console.log(`[QPay Invoice API Status ${response.status}]:`, JSON.stringify(data, null, 2));
+    return data;
+  } catch (err) {
+    console.error("[QPay Invoice Fetch Exception]:", err.message);
+    return { error: err.message };
+  }
 }
 
 async function checkQPayPaymentStatus(invoiceId) {
@@ -179,7 +192,9 @@ app.post("/api/qpay/create-invoice", async (req, res) => {
     const config = await getQPayConfigData();
     const invoiceData = await createQPayInvoiceData(config.planAmount, `Болзоо Платформ: @${cleanSlug}`);
 
-    console.log("QPay Invoice API Response:", JSON.stringify(invoiceData, null, 2));
+    if (!invoiceData.invoice_id) {
+      console.warn("⚠️ [QPay Warning] QPay did NOT return invoice_id. Reason/Response:", JSON.stringify(invoiceData));
+    }
 
     const invoiceId = invoiceData.invoice_id || `INV_${Date.now()}`;
     const passwordHash = await bcrypt.hash(password, 10);
