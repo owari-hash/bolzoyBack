@@ -42,8 +42,8 @@ mongoose
 
 // ─── QPAY CONFIG & HELPER FUNCTIONS ─────────────────────────────────────────
 
-const QPAY_BASE_URL = "https://quickqr.qpay.mn";
-let qpayTokenCache = { token: null, expiresAt: 0 };
+const QPAY_BASE_URL = process.env.QPAY_BASE_URL || "https://quickqr.qpay.mn";
+let qpayTokenCache = { token: null, refreshToken: null, expiresAt: 0 };
 const pendingRegistrations = new Map(); // invoice_id -> user reg data
 
 async function getQPayConfigData() {
@@ -51,35 +51,88 @@ async function getQPayConfigData() {
   if (!config) {
     config = await SystemConfig.create({ key: "default" });
   }
-  return config;
+  return {
+    terminalId: process.env.QPAY_TERMINAL_ID || config.terminalId || "95000059",
+    merchantId: process.env.QPAY_MERCHANT_ID || config.merchantId || "465d3e33-4f95-461a-ac1b-c24ab095af0a",
+    bankCode: config.bankCode || "050000",
+    accountNumber: config.accountNumber || "5039842709",
+    accountName: config.accountName || "Отгонбилэг",
+    planAmount: config.planAmount || 100,
+    mccCode: config.mccCode || "5812",
+    qpayUsername: process.env.QPAY_USERNAME || config.qpayUsername || "",
+    qpayPassword: process.env.QPAY_PASSWORD || config.qpayPassword || "",
+  };
 }
 
 async function getQPayToken() {
   const config = await getQPayConfigData();
   const now = Date.now();
+
+  // 1. If valid cached token exists, return it
   if (qpayTokenCache.token && qpayTokenCache.expiresAt > now + 60000) {
     return qpayTokenCache.token;
   }
 
+  // 2. Try refreshing token if refresh_token is available
+  if (qpayTokenCache.refreshToken) {
+    try {
+      console.log("[QPay] Token expired. Attempting token refresh via /v2/auth/refresh...");
+      const refreshResponse = await fetch(`${QPAY_BASE_URL}/v2/auth/refresh`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${qpayTokenCache.refreshToken}`,
+        },
+        body: JSON.stringify({ refresh_token: qpayTokenCache.refreshToken }),
+      });
+
+      const refreshData = await refreshResponse.json();
+      if (refreshData.access_token) {
+        console.log("✅ [QPay] Token refreshed successfully!");
+        qpayTokenCache.token = refreshData.access_token;
+        if (refreshData.refresh_token) {
+          qpayTokenCache.refreshToken = refreshData.refresh_token;
+        }
+        qpayTokenCache.expiresAt = now + (refreshData.expires_in || 3600) * 1000;
+        return refreshData.access_token;
+      }
+      console.warn("[QPay] Token refresh failed, falling back to full login...", JSON.stringify(refreshData));
+    } catch (refreshErr) {
+      console.error("[QPay Token Refresh Exception]:", refreshErr.message);
+    }
+  }
+
+  // 3. Perform full initial login (/v2/auth/token)
   try {
-    console.log(`[QPay] Requesting token with terminal_id: "${config.terminalId || "95000059"}"...`);
+    const headers = { "Content-Type": "application/json" };
+    let bodyObj = { terminal_id: config.terminalId || "95000059" };
+
+    if (config.qpayUsername && config.qpayPassword) {
+      const authHeader = Buffer.from(`${config.qpayUsername}:${config.qpayPassword}`).toString("base64");
+      headers["Authorization"] = `Basic ${authHeader}`;
+      console.log(`[QPay] Auto-logging in with Basic Auth (user: "${config.qpayUsername}")...`);
+    } else {
+      console.log(`[QPay] Auto-logging in with terminal_id: "${config.terminalId || "95000059"}"...`);
+    }
+
     const response = await fetch(`${QPAY_BASE_URL}/v2/auth/token`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ terminal_id: config.terminalId || "95000059" }),
+      headers,
+      body: JSON.stringify(bodyObj),
     });
 
     const data = await response.json();
     if (data.access_token) {
-      console.log("[QPay] Token acquired successfully!");
+      console.log("✅ [QPay] Token acquired successfully via auto-login!");
       qpayTokenCache.token = data.access_token;
+      qpayTokenCache.refreshToken = data.refresh_token || null;
       qpayTokenCache.expiresAt = now + (data.expires_in || 3600) * 1000;
       return data.access_token;
     } else {
-      console.error("[QPay Token Error] API returned no access_token:", JSON.stringify(data));
+      console.error("❌ [QPay Token Error] API returned no access_token:", JSON.stringify(data));
     }
   } catch (err) {
-    console.error("[QPay Token Fetch Exception]:", err.message);
+    console.error("❌ [QPay Token Fetch Exception]:", err.message);
   }
   return null;
 }
@@ -177,18 +230,14 @@ app.get("/api/foods", async (req, res) => {
 app.post("/api/qpay/create-invoice", async (req, res) => {
   try {
     let { username, slug, password, displayName } = req.body;
-    if (!username || !password) {
-      return res.status(400).json({ success: false, error: "Нэвтрэх нэр болон нууц үг шаардлагатай" });
+    if (!username) {
+      return res.status(400).json({ success: false, error: "Нэвтрэх нэр шаардлагатай" });
     }
 
     username = username.trim();
     const cleanSlug = (slug || username).toLowerCase().trim().replace(/[^a-z0-9]/g, "");
 
     const existing = await User.findOne({ $or: [{ username }, { slug: cleanSlug }] });
-    if (existing) {
-      return res.status(400).json({ success: false, error: "Нэвтрэх нэр эсвэл slug аль хэдийн бүртгэгдсэн байна" });
-    }
-
     const config = await getQPayConfigData();
     const invoiceData = await createQPayInvoiceData(config.planAmount, `Болзоо Платформ: @${cleanSlug}`);
 
@@ -197,15 +246,16 @@ app.post("/api/qpay/create-invoice", async (req, res) => {
     }
 
     const invoiceId = invoiceData.invoice_id || `INV_${Date.now()}`;
-    const passwordHash = await bcrypt.hash(password, 10);
 
-    // Save pending registration
-    pendingRegistrations.set(invoiceId, {
-      username,
-      slug: cleanSlug,
-      passwordHash,
-      displayName: displayName || username,
-    });
+    if (!existing && password) {
+      const passwordHash = await bcrypt.hash(password, 10);
+      pendingRegistrations.set(invoiceId, {
+        username,
+        slug: cleanSlug,
+        passwordHash,
+        displayName: displayName || username,
+      });
+    }
 
     res.json({
       success: true,

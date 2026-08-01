@@ -10,6 +10,8 @@ const systemConfigSchema = new mongoose.Schema(
     accountName: { type: String, default: "Отгонбилэг" },
     planAmount: { type: Number, default: 100 },
     mccCode: { type: String, default: "5812" },
+    qpayUsername: { type: String, default: "" },
+    qpayPassword: { type: String, default: "" },
   },
   { timestamps: true }
 );
